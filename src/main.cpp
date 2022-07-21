@@ -55,16 +55,15 @@ void reactionDiffusionImplicit(float t, float _alpha, float _beta, float _s, flo
     float db = (float)1 / 4; // diffusion raate of b
     float deltat = 0.1; // time step
 
-    SparseMatrix<double> Y(n, n), Z(n, n), b_diag(n, n), a_diag(n, n), I(n, n); 
-    I.setIdentity();
-
-    for (int i = 0; i < n; i++) {
-        a_diag.coeffRef(i, i) += a(i, 1);
-        b_diag.coeffRef(i, i) += b(i, 1);
-    }
+    SparseMatrix<double> Y(n, n), Z(n, n), b_diag(n, n), a_diag(n, n), I(n, n); I.setIdentity();
 
     // Turing's model
     for (int i = 0; i < t; i++) {
+        for (int i = 0; i < n; i++) {
+            a_diag.coeffRef(i, i) = a(i, 1);
+            b_diag.coeffRef(i, i) = b(i, 1);
+        }
+
         Y = I - (deltat * s * b_diag) + (deltat * s * I) - (deltat * da * L);
         Z = I + (deltat * s * a_diag) - (deltat * db * L);
 
