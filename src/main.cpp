@@ -11,6 +11,11 @@
 #include <igl/massmatrix.h>
 #include <igl/per_vertex_normals.h>
 #include <igl/readOBJ.h>
+#include <igl/cotmatrix.h>
+#include <igl/massmatrix.h>
+
+
+#include<Eigen/SparseCholesky>	
 
 #include "polyscope/messages.h"
 #include "polyscope/point_cloud.h"
@@ -27,6 +32,104 @@ Eigen::MatrixXi meshF;
 
 // Options for algorithms
 int iVertexSource = 7;
+
+int n; // # of vertices in the mesh
+Eigen::VectorXd randN;
+
+void reactionDiffusion(float t, float _alpha, float _beta, float _s, float _da, float _db) {
+    using namespace Eigen;
+    using namespace std;
+
+    SparseMatrix<double> L, M;
+    igl::cotmatrix(meshV, meshF, L); // returns V by V
+    //igl::massmatrix(meshV, meshF, igl::MASSMATRIX_TYPE_VORONOI, M); // returns V by V
+    //SimplicialLDLT<SparseMatrix<double> > solver;
+    //solver.compute(M);//diagonal
+    //L = solver.solve(L); // L = M^(-1)L
+
+    VectorXd a = VectorXd::Constant(n, 1, 4) + randN;
+    VectorXd b = VectorXd::Constant(n, 1, 4) + randN;
+
+    //Converge to Turing's pattern
+    VectorXd alpha = VectorXd::Constant(n, 1, 12);  // decay rate of a
+    VectorXd beta = VectorXd::Constant(n, 1, 16); // growing rate of b
+    float s = (float)1/128; // reaction rate
+    float da = (float)1/16; // diffusion rate of as
+    float db = (float)1/4; // diffusion raate of b
+    float deltat = 0.1; // time step
+
+    //Weird Zebra shape
+    //VectorXd alpha = VectorXd::Constant(n, 1, 0.233);  // decay rate of a
+    //VectorXd beta = VectorXd::Constant(n, 1, 0.465); // growing rate of b
+    //float s = 0.058; // reaction rate
+    //float da = 0.837; // diffusion rate of as
+    //float db = 0.070; // diffusion raate of b
+    //float deltat = 0.5; // time step
+
+    //Sliders
+    //VectorXd alpha = VectorXd::Constant(n, 1, _alpha);  // decay rate of a
+    //VectorXd beta = VectorXd::Constant(n, 1, _beta); // growing rate of b
+    //float s = _s; // reaction rate
+    //float da = _da; // diffusion rate of as
+    //float db = _db; // diffusion raate of b
+    //float deltat = 0.5; // time step
+   
+    // explicit 
+    // Turing's model. B -> A
+    VectorXd ab = VectorXd::Constant(n, 1, 0);
+    for (int i = 0; i < n; i++) {
+        ab(i, 1) = a(i, 1) * b(i, 1);
+    }
+    for (int i = 0; i < t; i++) {
+        a = (a + deltat * s * (ab - a - alpha) + deltat * da * L * a).eval();
+        b = (b + deltat * s * (beta - ab) + deltat * db * L * b).eval();
+    }
+
+    cout << a(1, 1)  <<  endl;
+    cout << alpha(1,1) << " " << beta(1,1) << " " << s << " " << da << " " << db << endl;
+    auto mesh = polyscope::getSurfaceMesh("input mesh");
+    auto temp = mesh->addVertexScalarQuantity("RD", a);
+    temp -> setMapRange({3.3,4.7});
+}
+
+void computeCotangentLaplacian(float t) {
+  using namespace Eigen;
+  using namespace std;
+
+  VectorXd A;
+  igl::gaussian_curvature(meshV, meshF, A); // A: V by 1 
+  float deltat = 0.1;
+  SparseMatrix<double> L;
+  igl::cotmatrix(meshV, meshF, L); // returns V by V
+
+  // explicit 
+   //A = (A + t*L*A).eval();
+
+   //auto mesh = polyscope::getSurfaceMesh("input mesh");
+   //auto temp = mesh->addVertexScalarQuantity("laplacian", A);
+   //temp -> setMapRange({-0.1,0.1});
+
+  //semi-implicit
+  SparseMatrix<double> Y;
+  int n = L.rows();
+
+  SparseMatrix<double> I(n, n);
+  I.setIdentity();
+
+  Y = I- deltat * L;
+
+  SimplicialLDLT<SparseMatrix<double> > solver;
+  solver.compute(Y);
+
+  for (int i = 0; i < t; i++) {
+      A = solver.solve(A);
+  }
+
+  auto mesh = polyscope::getSurfaceMesh("input mesh");
+  auto temp = mesh->addVertexScalarQuantity("laplacian", A);
+  temp -> setMapRange({-0.1, 0.1});
+}
+
 
 void addCurvatureScalar() {
   using namespace Eigen;
@@ -119,6 +222,27 @@ void callback() {
   if (ImGui::Button("compute distance")) {
     computeDistanceFrom();
   }
+
+  static int maxRD = 100;
+  ImGui::InputInt("max iter", &maxRD);
+  static float tRD = 0;
+  static float alpha = 0;
+  static float beta = 0;
+  static float s = 0;
+  static float da = 0;
+  static float db = 0;
+
+  ImGui::SameLine();
+  if ((ImGui::SliderFloat("ReactionDiffusion iter", &tRD, 0, maxRD))\
+      || (ImGui::SliderFloat("alpha", &alpha, 0, 20))\
+      || (ImGui::SliderFloat("beta", &beta, 0, 20))\
+      || (ImGui::SliderFloat("s", &s, 0, 1))\
+      || (ImGui::SliderFloat("da", &da, 0, 1))\
+      || (ImGui::SliderFloat("db", &db, 0, 1))){
+      reactionDiffusion(tRD, alpha, beta, s, da, db);
+  }
+
+
   ImGui::SameLine();
   ImGui::InputInt("source vertex", &iVertexSource);
 
@@ -143,6 +267,9 @@ int main(int argc, char **argv) {
 
   // Register the mesh with Polyscope
   polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+
+  n = meshV.rows();// number of vertex in the mesh
+  randN = Eigen::VectorXd::Random(n, 1);
 
   // Add the callback
   polyscope::state::userCallback = callback;
