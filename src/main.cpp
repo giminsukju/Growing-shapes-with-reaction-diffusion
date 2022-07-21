@@ -45,33 +45,15 @@ void reactionDiffusionImplicit(float t, float _alpha, float _beta, float _s, flo
     SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L); // returns V by V
 
-    // initial a, b
-    VectorXd a = VectorXd::Constant(n, 1, 4) + randN;
-    VectorXd b = VectorXd::Constant(n, 1, 4) + randN;
+    VectorXd a = VectorXd::Constant(n, 1, 4) + randN; // initial a
+    VectorXd b = VectorXd::Constant(n, 1, 4) + randN; // initial b
 
-    //Converge to Turing's pattern
     VectorXd alpha = VectorXd::Constant(n, 1, 12);  // decay rate of a
     VectorXd beta = VectorXd::Constant(n, 1, 16); // growing rate of b
     float s = (float)1 / 128; // reaction rate
     float da = (float)1 / 16; // diffusion rate of as
     float db = (float)1 / 4; // diffusion raate of b
     float deltat = 0.1; // time step
-
-    //Weird Zebra shape
-    //VectorXd alpha = VectorXd::Constant(n, 1, 0.233);  // decay rate of a
-    //VectorXd beta = VectorXd::Constant(n, 1, 0.465); // growing rate of b
-    //float s = 0.058; // reaction rate
-    //float da = 0.837; // diffusion rate of as
-    //float db = 0.070; // diffusion raate of b
-    //float deltat = 0.5; // time step
-
-    //Sliders
-    //VectorXd alpha = VectorXd::Constant(n, 1, _alpha);  // decay rate of a
-    //VectorXd beta = VectorXd::Constant(n, 1, _beta); // growing rate of b
-    //float s = _s; // reaction rate
-    //float da = _da; // diffusion rate of as
-    //float db = _db; // diffusion raate of b
-    //float deltat = 0.5; // time step
 
     SparseMatrix<double> Y(n, n), Z(n, n), b_diag(n, n), a_diag(n, n), I(n, n); 
     I.setIdentity();
@@ -81,20 +63,20 @@ void reactionDiffusionImplicit(float t, float _alpha, float _beta, float _s, flo
         b_diag.coeffRef(i, i) += b(i, 1);
     }
 
-    Y = I - (deltat * s * b_diag) + (deltat * s * I) - (deltat * da * L);
-    Z = I + (deltat * s * a_diag) - (deltat * db * L);
-
-    SimplicialLDLT<SparseMatrix<double> > solver_A, solver_B;
-    solver_A.compute(Y);
-    solver_B.compute(Z);
-
-    // Turing's model. B -> A
+    // Turing's model
     for (int i = 0; i < t; i++) {
+        Y = I - (deltat * s * b_diag) + (deltat * s * I) - (deltat * da * L);
+        Z = I + (deltat * s * a_diag) - (deltat * db * L);
+
+        SimplicialLDLT<SparseMatrix<double> > solver_A, solver_B;
+        solver_A.compute(Y);
+        solver_B.compute(Z);
+
         a = solver_A.solve(a - (deltat * s * alpha));
         b = solver_B.solve(b + (deltat * s * beta));
     }
 
-    cout << a(1, 1) << endl;
+    cout << "implicit " << a(1, 1) << endl;
     cout << alpha(1, 1) << " " << beta(1, 1) << " " << s << " " << da << " " << db << endl;
     auto mesh = polyscope::getSurfaceMesh("input mesh");
     auto temp = mesh->addVertexScalarQuantity("RD-implicit", a);
@@ -299,8 +281,8 @@ void callback() {
       || (ImGui::SliderFloat("s", &s, 0, 1))\
       || (ImGui::SliderFloat("da", &da, 0, 1))\
       || (ImGui::SliderFloat("db", &db, 0, 1))){
-      reactionDiffusionExplicit(tRD, alpha, beta, s, da, db);
-      //reactionDiffusionImplicit(tRD, alpha, beta, s, da, db);
+      //reactionDiffusionExplicit(tRD, alpha, beta, s, da, db);
+      reactionDiffusionImplicit(tRD, alpha, beta, s, da, db);
 
   }
 
