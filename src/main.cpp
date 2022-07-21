@@ -36,7 +36,8 @@ int iVertexSource = 7;
 int n; // # of vertices in the mesh
 Eigen::VectorXd randN;
 
-void reactionDiffusion(float t, float _alpha, float _beta, float _s, float _da, float _db) {
+
+void reactionDiffusionExplicit(float t, float _alpha, float _beta, float _s, float _da, float _db) {
     using namespace Eigen;
     using namespace std;
 
@@ -74,15 +75,10 @@ void reactionDiffusion(float t, float _alpha, float _beta, float _s, float _da, 
     //float db = _db; // diffusion raate of b
     //float deltat = 0.5; // time step
    
-    // explicit 
     // Turing's model. B -> A
-    VectorXd ab = VectorXd::Constant(n, 1, 0);
-    for (int i = 0; i < n; i++) {
-        ab(i, 1) = a(i, 1) * b(i, 1);
-    }
     for (int i = 0; i < t; i++) {
-        a = (a + deltat * s * (ab - a - alpha) + deltat * da * L * a).eval();
-        b = (b + deltat * s * (beta - ab) + deltat * db * L * b).eval();
+        a = (a + deltat * s * (a.cwiseProduct(b) - a - alpha) + deltat * da * L * a).eval();
+        b = (b + deltat * s * (beta - a.cwiseProduct(b)) + deltat * db * L * b).eval();
     }
 
     cout << a(1, 1)  <<  endl;
@@ -111,7 +107,6 @@ void computeCotangentLaplacian(float t) {
 
   //semi-implicit
   SparseMatrix<double> Y;
-  int n = L.rows();
 
   SparseMatrix<double> I(n, n);
   I.setIdentity();
@@ -239,7 +234,7 @@ void callback() {
       || (ImGui::SliderFloat("s", &s, 0, 1))\
       || (ImGui::SliderFloat("da", &da, 0, 1))\
       || (ImGui::SliderFloat("db", &db, 0, 1))){
-      reactionDiffusion(tRD, alpha, beta, s, da, db);
+      reactionDiffusionExplicit(tRD, alpha, beta, s, da, db);
   }
 
 
