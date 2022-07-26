@@ -13,9 +13,13 @@
 #include <igl/massmatrix.h>
 #include <igl/loop.h>
 #include <igl/writeOBJ.h>
-
+#include <igl/procrustes.h>
+#include <igl/rotate_vectors.h>
+#include <igl/slice.h>
+#include <igl/slice_into.h>
 
 #include<Eigen/SparseCholesky>	
+#include <Eigen/Core>
 
 
 #include "polyscope/polyscope.h"
@@ -39,6 +43,7 @@ int iVertexSource = 7;
 int n; // # of vertices in the mesh
 Eigen::VectorXd randN;
 
+//arbitrary function to display 2D grid color map
 void function(int n, int m, Eigen::MatrixXd& func) {
     for (int i = 0; i < (n); i++) {
         for (int j = 0; j < (m); j++) {
@@ -47,24 +52,55 @@ void function(int n, int m, Eigen::MatrixXd& func) {
     }
 }
 
-void create2DGridManual(int n, int m, Eigen::MatrixXd &V, Eigen::MatrixXi &F) {
+
+void create2DGridManual(int n, int m, Eigen::MatrixXd &V, Eigen::MatrixXi &F, float scale_1, float scale_2, bool displace, bool rotate) {
     using namespace Eigen;
     V.resize((n+1)*(m+1), 3);
-    F.resize(n*m, 4);
+    F.resize(n*m*2, 3);
 
-    for (int i = 0; i < (n + 1); i++) {
-        for (int j = 0; j < (m + 1); j++) {
-            V.row((m + 1) * i + j) = Vector3d(-j, -i, 0);
+    for (int i = 0; i < (n + 1); i++) { // row
+        for (int j = 0; j < (m + 1); j++) { // col
+            float z;
+            if (displace) {
+                z = j * 0.5 + (float(rand()) / float((RAND_MAX)) * float(5.0));
+            }
+            else {
+                z = 0;
+            }
+            if (rotate) {
+                V.row((m + 1) * i + j) = Vector3d(-j * scale_1, z, -i * scale_2);
+            }
+            else {
+                V.row((m + 1) * i + j) = Vector3d(-j * scale_1, -i * scale_2, z);
+            }
         }
     }
 
     int idx = 0;
     for (int i = 0; i < (n); i++) {
         for (int j = 0; j < (m); j++) {
-            F.row(idx) = Vector4i((m + 1) * i + j, (m + 1) * (i + 1) + j, (m + 1) * (i + 1) + j + 1, (m + 1) * i + j + 1);
+            F.row(idx) = Vector3i((m + 1) * i + j, (m + 1) * (i + 1) + j, (m + 1) * i + j + 1);
+            idx += 1;
+            F.row(idx) = Vector3i((m + 1) * (i + 1) + j, (m + 1) * (i + 1) + j + 1, (m + 1) * i + j + 1);
             idx += 1;
         }
     }
+}
+
+void create2DGridVariationsAndSave() {
+    Eigen::MatrixXd V1, V2, V3, V4;
+    Eigen::MatrixXi F1, F2, F3, F4;
+    create2DGridManual(10, 20, V1, F1, 1, 1, false, false);
+    igl::writeOBJ("../original grid.obj", V1, F1);
+
+    create2DGridManual(10, 20, V2, F2, 2, 3, false, false);
+    igl::writeOBJ("../scaled grid.obj", F2, F2);
+
+    create2DGridManual(10, 20, V3, F3, 1, 1, true, false);
+    igl::writeOBJ("../z displaced grid.obj", V3, F3);
+
+    create2DGridManual(10, 20, V4, F4, 1, 1, false, true);
+    igl::writeOBJ("../y rotated grid.obj", V4, F4);
 }
 
 // Semi-Implicit 2
@@ -209,97 +245,8 @@ void computeCotangentLaplacian(float t) {
   temp -> setMapRange({-0.1, 0.1});
 }
 
-void addCurvatureScalar() {
-  using namespace Eigen;
-  using namespace std;
-
-  VectorXd K;
-  igl::gaussian_curvature(meshV, meshF, K);
-  SparseMatrix<double> M, Minv;
-  igl::massmatrix(meshV, meshF, igl::MASSMATRIX_TYPE_DEFAULT, M);
-  igl::invert_diag(M, Minv);
-  K = (Minv * K).eval();
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexScalarQuantity("gaussian curvature", K,
-                                polyscope::DataType::SYMMETRIC);
-}
-
-void computeDistanceFrom() {
-  Eigen::VectorXi VS, FS, VT, FT;
-  // The selected vertex is the source
-  VS.resize(1);
-  VS << iVertexSource;
-  // All vertices are the targets
-  VT.setLinSpaced(meshV.rows(), 0, meshV.rows() - 1);
-  Eigen::VectorXd d;
-  igl::exact_geodesic(meshV, meshF, VS, FS, VT, FT, d);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexDistanceQuantity(
-          "distance from vertex " + std::to_string(iVertexSource), d);
-}
-
-void computeParameterization() {
-  using namespace Eigen;
-  using namespace std;
-
-  // Fix two points on the boundary
-  VectorXi bnd, b(2, 1);
-  igl::boundary_loop(meshF, bnd);
-
-  if (bnd.size() == 0) {
-    polyscope::warning("mesh has no boundary, cannot parameterize");
-    return;
-  }
-
-  b(0) = bnd(0);
-  b(1) = bnd(round(bnd.size() / 2));
-  MatrixXd bc(2, 2);
-  bc << 0, 0, 1, 0;
-
-  // LSCM parametrization
-  Eigen::MatrixXd V_uv;
-  igl::lscm(meshV, meshF, b, bc, V_uv);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexParameterizationQuantity("LSCM parameterization", V_uv);
-}
-
-void computeNormals() {
-  Eigen::MatrixXd N_vertices;
-  igl::per_vertex_normals(meshV, meshF, N_vertices);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexVectorQuantity("libIGL vertex normals", N_vertices);
-}
-
 void callback() {
 
-  static int numPoints = 2000;
-  static float param = 3.14;
-
-  ImGui::PushItemWidth(100);
-
-  // Curvature
-  if (ImGui::Button("add curvature")) {
-    addCurvatureScalar();
-  }
-  
-  // Normals 
-  if (ImGui::Button("add normals")) {
-    computeNormals();
-  }
-
-  // Param
-  if (ImGui::Button("add parameterization")) {
-    computeParameterization();
-  }
-
-  // Geodesics
-  if (ImGui::Button("compute distance")) {
-    computeDistanceFrom();
-  }
 
   static int maxRD = 100;
   ImGui::InputInt("max iter", &maxRD);
@@ -328,63 +275,139 @@ void callback() {
   ImGui::PopItemWidth();
 }
 
-int main(int argc, char **argv) {
-  //         //
-  // 2D grid //
-  //         //
-  Eigen::MatrixXd grid_V;
-  Eigen::MatrixXi grid_F;
-  create2DGridManual(10, 20, grid_V, grid_F);
-
-  // Options
-  polyscope::options::autocenterStructures = true;
-  polyscope::view::windowWidth = 1024;
-  polyscope::view::windowHeight = 1024;
-
-  // Initialize polyscope
-  polyscope::init();
-
-  // Register the mesh with Polyscope
-  polyscope::registerSurfaceMesh("input mesh", grid_V, grid_F);
-
-  Eigen::MatrixXd func(10, 20);
-  function(10, 20, func);
-  auto mesh = polyscope::getSurfaceMesh("input mesh");
-
-  func.transposeInPlace();
-  Eigen::VectorXd func_F(Eigen::Map<Eigen::VectorXd>(func.data(), func.cols() * func.rows()));
-  auto temp = mesh->addFaceScalarQuantity("test", func_F);
-
-  polyscope::show();
-
-  //         //
-  // 3D mesh //
-  //         //
-  
-  //std::string filename = "../spot.obj";
-  //std::cout << "loading: " << filename << std::endl;
-
-  //Eigen::MatrixXd origV;
-  //Eigen::MatrixXi origF;
-
-  // Read the mesh
-  //igl::readOBJ(filename, origV, origF);
-  ////Eigen::SparseMatrix<double> S;
-  //igl::loop(origV.rows(), origF, S, meshF);
-  //meshV = S * origV;
-
-  // Register the mesh with Polyscope
-  //polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
-
-  //n = meshV.rows();// number of vertex in the mesh
-  //randN = Eigen::VectorXd::Random(n, 1);
-
-  // Add the callback
-  // polyscope::state::userCallback = callback;
-
-  // Show the gui
-  //polyscope::show();
 
 
-  return 0;
+void procruste(Eigen::MatrixXi F_rest, Eigen::MatrixXd V_rest, Eigen::MatrixXd V_target, Eigen::MatrixXd& V_procruste) {
+    int n_faces = F_rest.rows();
+    for (int i = 0; i < n_faces; i++) { // iterating triangle by triangle 
+        Eigen::VectorXi v_indices = F_rest.row(i); //vertex indices in this triangle
+
+        Eigen::MatrixXd V_rest_triangle, V_target_triangle;
+        igl::slice(V_rest, v_indices, 1, V_rest_triangle); //slice: Y = X(I,:)
+        igl::slice(V_target, v_indices, 1, V_target_triangle); //slice: Y = X(I,:)
+
+        double scale;
+        Eigen::MatrixXd R;
+        Eigen::VectorXd t;
+        igl::procrustes(V_rest_triangle, V_target_triangle, true, false, scale, R, t);
+        R *= scale;
+        Eigen::MatrixXd V_procruste_triangle = (V_rest_triangle * R).rowwise() + t.transpose();
+        igl::slice_into(V_procruste_triangle, v_indices, 1, V_procruste); //slice into: Y(I,:) = X
+    }
 }
+
+void procrusteIteration(int maxIteration) {
+    Eigen::MatrixXd V_rest, V_target;
+    Eigen::MatrixXi F_rest, F_target;
+    // load original mesh
+    igl::readOBJ("../original grid.obj", V_rest, F_rest);
+
+    // load target mesh
+    // igl::readOBJ("../scaled grid.obj", V_target, F_target);
+    igl::readOBJ("../z displaced grid.obj", V_target, F_target);
+    // igl::readOBJ("../y rotated grid.obj", V_target, F_target);
+
+    polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
+    polyscope::registerSurfaceMesh("target mesh", V_target, F_rest);
+
+    for (int i = 0; i < maxIteration; i++) {
+        procruste(F_rest, V_rest, V_target, V_rest); //update V_rest mesh
+        polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
+    }
+}
+
+void callbackProcruste() {
+    static int maxIteration = 50;
+    ImGui::InputInt("max iter", &maxIteration);
+    static float iteration = 0;
+    if (ImGui::SliderFloat("run procruste", &iteration, 0, maxIteration)){
+        procrusteIteration(iteration);
+    }
+}
+
+
+int main(int argc, char** argv) {
+    srand((unsigned int)time(NULL));
+
+    //create2DGridVariationsAndSave();
+
+    //Rotate a mesh
+    //Eigen::MatrixXd n_x_axis(n, 3), n_z_axis(n, 3);
+    //for (int i = 0; i < n; i++) { // row
+    //    n_x_axis.row(i) = Eigen::Vector3d(1, 0, 0);
+    //}
+    // 
+    //for (int i = 0; i < n; i++) { // row
+    //    n_z_axis.row(i) = Eigen::Vector3d(0, 0, 1);
+    //}
+    //Eigen::VectorXd angle = Eigen::VectorXd::Constant(n, 1, 90);
+    //Eigen::MatrixXd V4 = igl::rotate_vectors(V1, angle, n_x_axis, n_z_axis);
+
+    polyscope::init();
+    polyscope::state::userCallback = callbackProcruste;
+    polyscope::show();
+
+    return 0;
+}
+
+
+//int main2(int argc, char **argv) {
+//  //         //
+//  // 2D grid //
+//  //         //
+//  Eigen::MatrixXd grid_V;
+//  Eigen::MatrixXi grid_F;
+//  create2DGridManual(10, 20, grid_V, grid_F);
+//
+//  // Options
+//  polyscope::options::autocenterStructures = true;
+//  polyscope::view::windowWidth = 1024;
+//  polyscope::view::windowHeight = 1024;
+//
+//  // Initialize polyscope
+//  polyscope::init();
+//
+//  // Register the mesh with Polyscope
+//  polyscope::registerSurfaceMesh("input mesh", grid_V, grid_F);
+//
+//  Eigen::MatrixXd func(10, 20);
+//  function(10, 20, func);
+//  auto mesh = polyscope::getSurfaceMesh("input mesh");
+//
+//  func.transposeInPlace();
+//  Eigen::VectorXd func_F(Eigen::Map<Eigen::VectorXd>(func.data(), func.cols() * func.rows()));
+//  auto temp = mesh->addFaceScalarQuantity("test", func_F);
+//
+//  polyscope::show();
+//
+//  //         //
+//  // 3D mesh //
+//  //         //
+//  
+//  //std::string filename = "../spot.obj";
+//  //std::cout << "loading: " << filename << std::endl;
+//
+//  //Eigen::MatrixXd origV;
+//  //Eigen::MatrixXi origF;
+//
+//  // Read the mesh
+//  //igl::readOBJ(filename, origV, origF);
+//  ////Eigen::SparseMatrix<double> S;
+//  //igl::loop(origV.rows(), origF, S, meshF);
+//  //meshV = S * origV;
+//
+//  // Register the mesh with Polyscope
+//  //polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+//
+//  //n = meshV.rows();// number of vertex in the mesh
+//  //randN = Eigen::VectorXd::Random(n, 1);
+//
+//  // Add the callback
+//  // polyscope::state::userCallback = callback;
+//
+//  // Show the gui
+//  //polyscope::show();
+//
+//
+//  return 0;
+//}
