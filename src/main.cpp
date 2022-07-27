@@ -277,42 +277,44 @@ void callback() {
 
 
 
-void procruste(Eigen::MatrixXi F_rest, Eigen::MatrixXd V_rest, Eigen::MatrixXd V_target, Eigen::MatrixXd& V_procruste) {
-    int n_faces = F_rest.rows();
+void procruste(Eigen::MatrixXi F_init, Eigen::MatrixXd V_init, Eigen::MatrixXd V_rest, Eigen::MatrixXd& V_update) {
+    int n_faces = F_init.rows();
     for (int i = 0; i < n_faces; i++) { // iterating triangle by triangle 
-        Eigen::VectorXi v_indices = F_rest.row(i); //vertex indices in this triangle
+        Eigen::VectorXi v_indices = F_init.row(i); //vertex indices in this triangle
 
-        Eigen::MatrixXd V_rest_triangle, V_target_triangle;
-        igl::slice(V_rest, v_indices, 1, V_rest_triangle); //slice: Y = X(I,:)
-        igl::slice(V_target, v_indices, 1, V_target_triangle); //slice: Y = X(I,:)
+        Eigen::MatrixXd V_init_triangle, V_rest_triangle;
+        igl::slice(V_init, v_indices, 1, V_init_triangle); //slice: Y = X(I,:)
+        igl::slice(V_rest, Eigen::Vector3i(3*i, 3*i+1, 3*i+2), 1, V_rest_triangle); //slice: Y = X(I,:)
 
         double scale;
         Eigen::MatrixXd R;
         Eigen::VectorXd t;
-        igl::procrustes(V_rest_triangle, V_target_triangle, true, false, scale, R, t);
-        R *= scale;
+        igl::procrustes(V_rest_triangle, V_init_triangle, false, false, scale, R, t); //X: reference, Y:target
         Eigen::MatrixXd V_procruste_triangle = (V_rest_triangle * R).rowwise() + t.transpose();
-        igl::slice_into(V_procruste_triangle, v_indices, 1, V_procruste); //slice into: Y(I,:) = X
+        igl::slice_into(V_procruste_triangle, v_indices, 1, V_init); //slice into: Y(I,:) = X
+
+        if (i == 0) {
+            Eigen::MatrixXi this_face(1, 3);
+            this_face.row(0) = Eigen::Vector3i(0, 1, 2);
+            polyscope::registerSurfaceMesh("0th triangle mesh", V_procruste_triangle, this_face);
+        }
+        
+        if (i == 1) {
+            Eigen::MatrixXi this_face(1, 3);
+            this_face.row(0) = Eigen::Vector3i(0, 1, 2);
+            polyscope::registerSurfaceMesh("1st triangle mesh", V_procruste_triangle, this_face);
+        }
     }
+    V_update = V_init;
 }
 
-void procrusteIteration(int maxIteration) {
-    Eigen::MatrixXd V_rest, V_target;
-    Eigen::MatrixXi F_rest, F_target;
-    // load original mesh
-    igl::readOBJ("../original grid.obj", V_rest, F_rest);
-
-    // load target mesh
-    // igl::readOBJ("../scaled grid.obj", V_target, F_target);
-    igl::readOBJ("../z displaced grid.obj", V_target, F_target);
-    // igl::readOBJ("../y rotated grid.obj", V_target, F_target);
-
-    polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
-    polyscope::registerSurfaceMesh("target mesh", V_target, F_rest);
+void procrusteIteration(int maxIteration, Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Eigen::MatrixXd V_rest) {
+    
+    polyscope::registerSurfaceMesh("mesh", V_init, F_init);
 
     for (int i = 0; i < maxIteration; i++) {
-        procruste(F_rest, V_rest, V_target, V_rest); //update V_rest mesh
-        polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
+        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
+        polyscope::registerSurfaceMesh("mesh", V_init, F_init);
     }
 }
 
@@ -321,7 +323,7 @@ void callbackProcruste() {
     ImGui::InputInt("max iter", &maxIteration);
     static float iteration = 0;
     if (ImGui::SliderFloat("run procruste", &iteration, 0, maxIteration)){
-        procrusteIteration(iteration);
+        //procrusteIteration(iteration);
     }
 }
 
@@ -331,7 +333,92 @@ int main(int argc, char** argv) {
 
     //create2DGridVariationsAndSave();
 
-    //Rotate a mesh
+    Eigen::MatrixXd V_init;
+    Eigen::MatrixXi F_init;
+    // load original mesh
+    igl::readOBJ("../original grid.obj", V_init, F_init);
+
+    // randomly displacing z-axis of 2D grid
+    for (int i = 0; i < V_init.rows(); i++) {
+        V_init(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
+    }
+
+    // large scaling for the middle region, small scaling for the outer region
+    Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
+
+    int m = 10; //TODO: to be dependent on the input mesh size
+    for (int i = 5; i <= 15; i++) { // row
+        for (int j = 2; j <= 8; j++) { // col
+            scaling((m + 1) * i + j) = 1.5;
+        }
+    }
+
+    // construct rest mesh (V_rest)
+    int n_faces = F_init.rows();
+    Eigen::MatrixXd V_rest(n_faces * 3, 3); // position of n_faces * 3 vertices, ordered according to F_rest face
+    Eigen::MatrixXi F_rest(n_faces, 3);
+    for (int i = 0; i < n_faces; i++) {
+        Eigen::VectorXi v_indices = F_init.row(i); //vertex indices in this triangle, 1 by 3
+
+        //std::cout << v_indices << std::endl;
+
+        Eigen::VectorXd v0 = V_init.row(v_indices(0)); //original position of the 1st vertex in the triangle, 1 by 3 //TODO: randomly select the 1st vertex
+        Eigen::VectorXd v1 = V_init.row(v_indices(1)); //original position of the 2nd vertex in the triangle, 1 by 3
+        Eigen::VectorXd v2 = V_init.row(v_indices(2)); //original position of the 3rd vertex in the triangle, 1 by 3
+
+        //std::cout << "v0, v1, v2" << std::endl << v0 << std::endl << v1 << std::endl << v2 << std::endl;
+
+        float new_v0_v1_l = (v1.transpose() - v0.transpose()).norm() * (scaling(v_indices(0)) + scaling(v_indices(1))) / 2;
+        float new_v1_v2_l = (v2.transpose() - v1.transpose()).norm() * (scaling(v_indices(1)) + scaling(v_indices(2))) / 2;
+        float new_v2_v0_l = (v0.transpose() - v2.transpose()).norm() * (scaling(v_indices(2)) + scaling(v_indices(0))) / 2;
+
+        // std::cout << "scaling" << std::endl << scaling(v_indices(0)) << std::endl << scaling(v_indices(1)) << std::endl << scaling(v_indices(2)) << std::endl;
+        // std::cout << "new legnths" << std::endl << new_v0_v1_l << std::endl << new_v1_v2_l << std::endl << new_v2_v0_l << std::endl;
+
+        float new_v2_x = (pow(new_v0_v1_l, 2) + pow(new_v2_v0_l, 2) - pow(new_v1_v2_l, 2)) / (2 * new_v0_v1_l);
+        float new_v2_y = sqrt(pow(new_v2_v0_l, 2) - pow(new_v2_x, 2));
+
+        V_rest.row(i * 3) = Eigen::Vector3d(0.0, 0.0, 0.0);  
+        V_rest.row(i * 3 + 1) = Eigen::Vector3d(new_v0_v1_l, 0.0, 0.0);
+        V_rest.row(i * 3 + 2) = Eigen::Vector3d(new_v2_x, new_v2_y, 0.0);
+
+        F_rest.row(i) = Eigen::Vector3i(i * 3, i * 3 + 1, i * 3 + 2);
+        //std::cout << V_target.row(i * 3) << std::endl << V_target.row(i * 3 + 1) << std::endl << V_target.row(i * 3 + 2) << std::endl;
+    }
+
+    polyscope::init();
+
+    polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
+
+    polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
+
+    for (int i = 0; i < 1; i++) {
+        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
+        polyscope::registerSurfaceMesh("updated mesh iter 1", V_init, F_init);
+    }
+
+    for (int i = 0; i < 1; i++) {
+        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
+        polyscope::registerSurfaceMesh("updated mesh iter 2", V_init, F_init);
+    }
+
+    for (int i = 0; i < 1; i++) {
+        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
+        polyscope::registerSurfaceMesh("updated mesh iter 3", V_init, F_init);
+    }
+
+    for (int i = 0; i < 97; i++) {
+        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
+        polyscope::registerSurfaceMesh("updated mesh iter 100", V_init, F_init);
+    }
+
+    //polyscope::state::userCallback = callbackProcruste;
+    polyscope::show();
+
+    return 0;
+}
+
+//Rotate a mesh
     //Eigen::MatrixXd n_x_axis(n, 3), n_z_axis(n, 3);
     //for (int i = 0; i < n; i++) { // row
     //    n_x_axis.row(i) = Eigen::Vector3d(1, 0, 0);
@@ -343,12 +430,6 @@ int main(int argc, char** argv) {
     //Eigen::VectorXd angle = Eigen::VectorXd::Constant(n, 1, 90);
     //Eigen::MatrixXd V4 = igl::rotate_vectors(V1, angle, n_x_axis, n_z_axis);
 
-    polyscope::init();
-    polyscope::state::userCallback = callbackProcruste;
-    polyscope::show();
-
-    return 0;
-}
 
 
 //int main2(int argc, char **argv) {
