@@ -17,6 +17,11 @@
 #include <igl/rotate_vectors.h>
 #include <igl/slice.h>
 #include <igl/slice_into.h>
+#include <igl/edges.h>
+#include <igl/is_boundary_edge.h>
+#include <igl/edge_flaps.h>
+#include <igl/edge_topology.h>
+
 
 #include<Eigen/SparseCholesky>	
 #include <Eigen/Core>
@@ -245,6 +250,7 @@ void computeCotangentLaplacian(float t) {
   temp -> setMapRange({-0.1, 0.1});
 }
 
+// callbacks for reaction-diffusion
 void callback() {
 
 
@@ -292,38 +298,217 @@ void procruste(Eigen::MatrixXi F_init, Eigen::MatrixXd V_init, Eigen::MatrixXd V
         igl::procrustes(V_rest_triangle, V_init_triangle, false, false, scale, R, t); //X: reference, Y:target
         Eigen::MatrixXd V_procruste_triangle = (V_rest_triangle * R).rowwise() + t.transpose();
         igl::slice_into(V_procruste_triangle, v_indices, 1, V_init); //slice into: Y(I,:) = X
-
-        if (i == 0) {
-            Eigen::MatrixXi this_face(1, 3);
-            this_face.row(0) = Eigen::Vector3i(0, 1, 2);
-            polyscope::registerSurfaceMesh("0th triangle mesh", V_procruste_triangle, this_face);
-        }
-        
-        if (i == 1) {
-            Eigen::MatrixXi this_face(1, 3);
-            this_face.row(0) = Eigen::Vector3i(0, 1, 2);
-            polyscope::registerSurfaceMesh("1st triangle mesh", V_procruste_triangle, this_face);
-        }
     }
     V_update = V_init;
 }
 
-void procrusteIteration(int maxIteration, Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Eigen::MatrixXd V_rest) {
-    
-    polyscope::registerSurfaceMesh("mesh", V_init, F_init);
 
-    for (int i = 0; i < maxIteration; i++) {
-        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
-        polyscope::registerSurfaceMesh("mesh", V_init, F_init);
+// TODO: combine with procruste triangle
+void procruste_diamond(Eigen::MatrixXi F_rest_diamonds_in_org_v_idx, Eigen::MatrixXd V_init, Eigen::MatrixXd V_rest_diamonds, Eigen::MatrixXd& V_update) {
+    // rigidly translate & rotate a flat diamond to match the initial mesh as much as possible
+    int n_diamonds = F_rest_diamonds_in_org_v_idx.rows();
+    for (int i = 0; i < n_diamonds; i++) { // iterating triangle by triangle 
+        Eigen::MatrixXd V_init_diamond, V_rest_diamond;
+
+        Eigen::VectorXi v_indices = F_rest_diamonds_in_org_v_idx.row(i); //vertex indices from the upper triangle in this diamond
+        igl::slice(V_init, v_indices, 1, V_init_diamond); //slice: Y = X(I,:), 4 by 3, 
+        igl::slice(V_rest_diamonds, Eigen::Vector4i(4 * i, 4 * i + 2, 4 * i + 1, 4 * i + 3), 1, V_rest_diamond); //slice: Y = X(I,:), 4 by 3
+
+        double scale;
+        Eigen::MatrixXd R;
+        Eigen::VectorXd t;
+        igl::procrustes(V_rest_diamond, V_init_diamond, false, false, scale, R, t); //X: reference, Y:target
+        Eigen::MatrixXd V_procruste_diamond = (V_rest_diamond * R).rowwise() + t.transpose(); // 2 by 3
+        igl::slice_into(V_procruste_diamond, v_indices, 1, V_init); //slice into: Y(I,:) = X
+    }
+    V_update = V_init;
+}
+
+void constructRestMesh(Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Eigen::VectorXd scaling, Eigen::MatrixXd& V_rest, Eigen::MatrixXi& F_rest) {
+    int n_faces = F_init.rows();
+    for (int i = 0; i < n_faces; i++) {
+        Eigen::VectorXi v_indices = F_init.row(i); //vertex indices in this triangle, 1 by 3
+
+        Eigen::VectorXd v0 = V_init.row(v_indices(0)); //original position of the 1st vertex in the triangle, 1 by 3 //TODO: randomly select the 1st vertex
+        Eigen::VectorXd v1 = V_init.row(v_indices(1)); //original position of the 2nd vertex in the triangle, 1 by 3
+        Eigen::VectorXd v2 = V_init.row(v_indices(2)); //original position of the 3rd vertex in the triangle, 1 by 3
+
+        float new_v0_v1_l = (v1.transpose() - v0.transpose()).norm() * (scaling(v_indices(0)) + scaling(v_indices(1))) / 2;
+        float new_v1_v2_l = (v2.transpose() - v1.transpose()).norm() * (scaling(v_indices(1)) + scaling(v_indices(2))) / 2;
+        float new_v2_v0_l = (v0.transpose() - v2.transpose()).norm() * (scaling(v_indices(2)) + scaling(v_indices(0))) / 2;
+
+        float new_v2_x = (pow(new_v0_v1_l, 2) + pow(new_v2_v0_l, 2) - pow(new_v1_v2_l, 2)) / (2 * new_v0_v1_l);
+        float new_v2_y = sqrt(pow(new_v2_v0_l, 2) - pow(new_v2_x, 2));
+
+        V_rest.row(i * 3) = Eigen::Vector3d(0.0, 0.0, 0.0);
+        V_rest.row(i * 3 + 1) = Eigen::Vector3d(new_v0_v1_l, 0.0, 0.0);
+        V_rest.row(i * 3 + 2) = Eigen::Vector3d(new_v2_x, new_v2_y, 0.0);
+
+        F_rest.row(i) = Eigen::Vector3i(i * 3, i * 3 + 1, i * 3 + 2);
     }
 }
 
-void callbackProcruste() {
-    static int maxIteration = 50;
-    ImGui::InputInt("max iter", &maxIteration);
-    static float iteration = 0;
-    if (ImGui::SliderFloat("run procruste", &iteration, 0, maxIteration)){
-        //procrusteIteration(iteration);
+void constructDiamondRestMesh(Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Eigen::MatrixXd& V_rest_diamond, Eigen::MatrixXi& F_rest_diamond, Eigen::MatrixXi& F_rest_diamond_in_org_v_idx) {
+    Eigen::MatrixXi E; //E(e) row = (vertex i, vertex j) edge
+    Eigen::VectorXi EMAP;
+    Eigen::MatrixXi EF; //E(e) is the edge of EF(e,0) face and EF(e,1) face, edge having EF(e,0) == -1 or EF(e,1) == -1 indicates boundary edge
+    Eigen::MatrixXi EI; //E(e,0) is opposite of EI(e,0)=v th vertex in that face (and similarly for E(e,1))
+    igl::edge_flaps(F_init, E, EMAP, EF, EI);
+
+    int inner_edge_ctr = 0;
+    for (int i = 0; i < E.rows(); i++) { // iterate over all inner edges
+        int face_1_idx = EF(i, 0);
+        int face_2_idx = EF(i, 1);
+
+        int edge_v_1_idx = E(i, 0);
+        int edge_v_2_idx = E(i, 1);
+
+        int face_1_corner_v_idx = F_init(face_1_idx, EI(i, 0));
+        int face_2_corner_v_idx = F_init(face_2_idx, EI(i, 1));
+        if ((face_1_idx != -1) && (face_2_idx != -1)) { // is inner edge
+            // construct a flattened diamond that loks like:  
+            //              
+            //           edge_v_1_idx (v2)
+            //           /             \
+            //          /               \
+            //  edge_v_1_idx (v0) ------ edge_v_2_idx (v1)
+            //          \               /
+            //           \             /
+            //            edge_v_2_idx (v3)
+            //
+            Eigen::VectorXd v0 = V_init.row(edge_v_1_idx);
+            Eigen::VectorXd v1 = V_init.row(edge_v_2_idx);
+            Eigen::VectorXd v2 = V_init.row(face_1_corner_v_idx);
+            Eigen::VectorXd v3 = V_init.row(face_2_corner_v_idx);
+
+            float v0_v1_l = (v1.transpose() - v0.transpose()).norm();
+            float v1_v2_l = (v2.transpose() - v1.transpose()).norm();
+            float v0_v2_l = (v0.transpose() - v2.transpose()).norm();
+            float v1_v3_l = (v1.transpose() - v3.transpose()).norm();
+            float v0_v3_l = (v0.transpose() - v3.transpose()).norm();
+
+            float flat_v1_x = v0_v1_l;
+            float flat_v1_y = 0;
+            float flat_v2_x = (pow(v0_v1_l, 2) + pow(v0_v2_l, 2) - pow(v1_v2_l, 2)) / (2 * v0_v1_l);//TODO: cleanup and wrap as a function
+            float flat_v2_y = sqrt(pow(v0_v2_l, 2) - pow(flat_v2_x, 2));
+            float flat_v3_x = (pow(v0_v1_l, 2) + pow(v0_v3_l, 2) - pow(v1_v3_l, 2)) / (2 * v0_v1_l);
+            float flat_v3_y = -sqrt(pow(v0_v3_l, 2) - pow(flat_v3_x, 2));
+
+            V_rest_diamond.row(inner_edge_ctr * 4) = Eigen::Vector3d(0.0, 0.0, 0.0);
+            V_rest_diamond.row(inner_edge_ctr * 4 + 1) = Eigen::Vector3d(flat_v1_x, flat_v1_y, 0.0);
+            V_rest_diamond.row(inner_edge_ctr * 4 + 2) = Eigen::Vector3d(flat_v2_x, flat_v2_y, 0.0);
+            V_rest_diamond.row(inner_edge_ctr * 4 + 3) = Eigen::Vector3d(flat_v3_x, flat_v3_y, 0.0);
+
+            F_rest_diamond.row(inner_edge_ctr) = Eigen::Vector4i(inner_edge_ctr * 4, inner_edge_ctr * 4 + 2, inner_edge_ctr * 4 + 1, inner_edge_ctr * 4 + 3); // v0 -> v2 -> v1 -> v3 order
+            F_rest_diamond_in_org_v_idx.row(inner_edge_ctr) = Eigen::Vector4i(edge_v_1_idx, face_1_corner_v_idx, edge_v_2_idx, face_2_corner_v_idx); // v0 -> v2 -> v1 -> v3 order
+            //if (inner_edge_ctr == 200) { //TODO: debugging purposes, have to update declarations
+            //    Eigen::MatrixXd V_rest_diamond_1(1 * 4, 3);
+            //    Eigen::MatrixXi F_rest_diamond_1(1 * 2, 3);
+            //    V_rest_diamond_1.row(0) = Eigen::Vector3d(0.0, 0.0, 0.0);
+            //    V_rest_diamond_1.row(1) = Eigen::Vector3d(flat_v1_x, flat_v1_y, 0.0);
+            //    V_rest_diamond_1.row(2) = Eigen::Vector3d(flat_v2_x, flat_v2_y, 0.0);
+            //    V_rest_diamond_1.row(3) = Eigen::Vector3d(flat_v3_x, flat_v3_y, 0.0);
+
+            //    F_rest_diamond_1.row(0) = Eigen::Vector4i(0, 2, 1, 3);
+
+            //    polyscope::registerSurfaceMesh("diamond rest mesh edge 200", V_rest_diamond_1, F_rest_diamond_1);
+            //}
+            inner_edge_ctr += 1;
+        }
+    }
+}
+
+void growShape(int n_iteration, float alpha, float beta) { //TODO: take mesh file as an input
+    // load original mesh 
+    Eigen::MatrixXd V_init;
+    Eigen::MatrixXi F_init;
+    igl::readOBJ("../original grid.obj", V_init, F_init);
+
+    // randomly displacing z-axis of 2D grid
+    for (int i = 0; i < V_init.rows(); i++) {
+        V_init(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
+    }
+    polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
+
+
+    // set non-uniform scaling, inner area scaling > outer area scaling
+    Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
+    int m = 10; //TODO: take input mesh size as a variable
+    for (int i = 5; i <= 15; i++) { // row
+        for (int j = 2; j <= 8; j++) { // col
+            scaling((m + 1) * i + j) = 1.5;
+        }
+    }
+
+    // construct rest mesh
+    int n_faces = F_init.rows();
+    Eigen::MatrixXd V_rest(n_faces * 3, 3); // position of n_faces * 3 vertices, ordered according to F_rest face
+    Eigen::MatrixXi F_rest(n_faces, 3);
+    constructRestMesh(V_init, F_init, scaling, V_rest, F_rest);
+    polyscope::registerSurfaceMesh("triangle rest mesh", V_rest, F_rest);
+
+    for (int itr_ctr = 0; itr_ctr < n_iteration; itr_ctr++) {
+        // stretching 
+        Eigen::MatrixXd V_stretched(V_init.rows(), 3);
+        procruste(F_init, V_init, V_rest, V_stretched); //update V_stretched mesh
+        V_init = V_init + (V_stretched - V_init) * alpha;
+        if (itr_ctr == 0) { //TODO: use f-string instead of multiple if statements
+            polyscope::registerSurfaceMesh("stretched: iter 1", V_init, F_init);
+        }
+        if (itr_ctr == 9) { 
+            polyscope::registerSurfaceMesh("stretched: iter 10", V_init, F_init);
+        }
+        if (itr_ctr == 99) { 
+            polyscope::registerSurfaceMesh("stretched: iter 100", V_init, F_init);
+        }
+
+        // construct diamond rest mesh for bending-resisting
+        Eigen::MatrixXi E; //E(e) row = (vertex i, vertex j) edge
+        Eigen::VectorXi EMAP;
+        Eigen::MatrixXi EF; //E(e) is the edge of EF(e,0) face and EF(e,1) face, edge having EF(e,0) == -1 or EF(e,1) == -1 indicates boundary edge
+        Eigen::MatrixXi EI; //E(e,0) is opposite of EI(e,0)=v th vertex in that face (and similarly for E(e,1))
+        igl::edge_flaps(F_init, E, EMAP, EF, EI); //TODO: replace with edges()
+
+        Eigen::Array<bool, Eigen::Dynamic, 1> BoolBoundary;
+        igl::is_boundary_edge(E, F_init, BoolBoundary); //TODO: remove this function, redundant
+        int n_inner_edges = E.rows() - BoolBoundary.count();
+
+        Eigen::MatrixXd V_rest_diamond(n_inner_edges * 4, 3); // xyz position of n_inner_edges * 4 vertices, (4*i)th, (4*i+1)th, (4*i+2)th, (4*i+3)th vertices make one diamond, diamond ordered according to inner edge list
+        Eigen::MatrixXi F_rest_diamond(n_inner_edges, 4); // vertex indices of a diamond consist of (2*i)th triangle and (2*i+1)th triangl
+        Eigen::MatrixXi F_rest_diamond_in_org_v_idx(n_inner_edges, 4); // vertex indices of a diamond consist of (2*i)th triangle and (2*i+1)th triangl
+        constructDiamondRestMesh(V_init, F_init, V_rest_diamond, F_rest_diamond, F_rest_diamond_in_org_v_idx);
+        if (itr_ctr == 0) {
+            polyscope::registerSurfaceMesh("diamond rest mesh: iter 1", V_rest_diamond, F_rest_diamond);
+        }
+
+        //bending resisting
+        Eigen::MatrixXd V_bending_resisted(V_init.rows(), 3);
+        procruste_diamond(F_rest_diamond_in_org_v_idx, V_init, V_rest_diamond, V_bending_resisted); //update V_bending_resisted mesh
+        V_init = V_init + (V_bending_resisted - V_init) * beta;
+        if (itr_ctr == 0) { //TODO: use f-string instead of multiple if statements
+            polyscope::registerSurfaceMesh("bending resisted: iter 1", V_init, F_init);
+        }
+        if (itr_ctr == 9) {
+            polyscope::registerSurfaceMesh("bending resisted: iter 10", V_init, F_init);
+        }
+        if (itr_ctr == 99) {
+            polyscope::registerSurfaceMesh("bending resisted: iter 100", V_init, F_init);
+        }
+    }
+    polyscope::registerSurfaceMesh("final mesh", V_init, F_init);
+}
+
+void callbackGrowingShape() {
+    static int max_n_iteration = 100;
+    ImGui::InputInt("max iter", &max_n_iteration);
+    static float alpha = 1.0;
+    static float beta = 0.5;
+
+    static float n_iteration = 0;
+    if ((ImGui::SliderFloat("growing shapes", &n_iteration, 0, max_n_iteration))
+        || (ImGui::InputFloat("alpha", &alpha))
+        || (ImGui::InputFloat("beta", &beta))) {
+        growShape(n_iteration, alpha, beta);
     }
 }
 
@@ -331,104 +516,14 @@ void callbackProcruste() {
 int main(int argc, char** argv) {
     srand((unsigned int)time(NULL));
 
-    //create2DGridVariationsAndSave();
-
-    Eigen::MatrixXd V_init;
-    Eigen::MatrixXi F_init;
-    // load original mesh
-    igl::readOBJ("../original grid.obj", V_init, F_init);
-
-    // randomly displacing z-axis of 2D grid
-    for (int i = 0; i < V_init.rows(); i++) {
-        V_init(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
-    }
-
-    // large scaling for the middle region, small scaling for the outer region
-    Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
-
-    int m = 10; //TODO: to be dependent on the input mesh size
-    for (int i = 5; i <= 15; i++) { // row
-        for (int j = 2; j <= 8; j++) { // col
-            scaling((m + 1) * i + j) = 1.5;
-        }
-    }
-
-    // construct rest mesh (V_rest)
-    int n_faces = F_init.rows();
-    Eigen::MatrixXd V_rest(n_faces * 3, 3); // position of n_faces * 3 vertices, ordered according to F_rest face
-    Eigen::MatrixXi F_rest(n_faces, 3);
-    for (int i = 0; i < n_faces; i++) {
-        Eigen::VectorXi v_indices = F_init.row(i); //vertex indices in this triangle, 1 by 3
-
-        //std::cout << v_indices << std::endl;
-
-        Eigen::VectorXd v0 = V_init.row(v_indices(0)); //original position of the 1st vertex in the triangle, 1 by 3 //TODO: randomly select the 1st vertex
-        Eigen::VectorXd v1 = V_init.row(v_indices(1)); //original position of the 2nd vertex in the triangle, 1 by 3
-        Eigen::VectorXd v2 = V_init.row(v_indices(2)); //original position of the 3rd vertex in the triangle, 1 by 3
-
-        //std::cout << "v0, v1, v2" << std::endl << v0 << std::endl << v1 << std::endl << v2 << std::endl;
-
-        float new_v0_v1_l = (v1.transpose() - v0.transpose()).norm() * (scaling(v_indices(0)) + scaling(v_indices(1))) / 2;
-        float new_v1_v2_l = (v2.transpose() - v1.transpose()).norm() * (scaling(v_indices(1)) + scaling(v_indices(2))) / 2;
-        float new_v2_v0_l = (v0.transpose() - v2.transpose()).norm() * (scaling(v_indices(2)) + scaling(v_indices(0))) / 2;
-
-        // std::cout << "scaling" << std::endl << scaling(v_indices(0)) << std::endl << scaling(v_indices(1)) << std::endl << scaling(v_indices(2)) << std::endl;
-        // std::cout << "new legnths" << std::endl << new_v0_v1_l << std::endl << new_v1_v2_l << std::endl << new_v2_v0_l << std::endl;
-
-        float new_v2_x = (pow(new_v0_v1_l, 2) + pow(new_v2_v0_l, 2) - pow(new_v1_v2_l, 2)) / (2 * new_v0_v1_l);
-        float new_v2_y = sqrt(pow(new_v2_v0_l, 2) - pow(new_v2_x, 2));
-
-        V_rest.row(i * 3) = Eigen::Vector3d(0.0, 0.0, 0.0);  
-        V_rest.row(i * 3 + 1) = Eigen::Vector3d(new_v0_v1_l, 0.0, 0.0);
-        V_rest.row(i * 3 + 2) = Eigen::Vector3d(new_v2_x, new_v2_y, 0.0);
-
-        F_rest.row(i) = Eigen::Vector3i(i * 3, i * 3 + 1, i * 3 + 2);
-        //std::cout << V_target.row(i * 3) << std::endl << V_target.row(i * 3 + 1) << std::endl << V_target.row(i * 3 + 2) << std::endl;
-    }
+    //create2DGridVariationsAndSave(); 
 
     polyscope::init();
-
-    polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
-
-    polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
-
-    for (int i = 0; i < 1; i++) {
-        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
-        polyscope::registerSurfaceMesh("updated mesh iter 1", V_init, F_init);
-    }
-
-    for (int i = 0; i < 1; i++) {
-        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
-        polyscope::registerSurfaceMesh("updated mesh iter 2", V_init, F_init);
-    }
-
-    for (int i = 0; i < 1; i++) {
-        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
-        polyscope::registerSurfaceMesh("updated mesh iter 3", V_init, F_init);
-    }
-
-    for (int i = 0; i < 97; i++) {
-        procruste(F_init, V_init, V_rest, V_init); //update V_rest mesh
-        polyscope::registerSurfaceMesh("updated mesh iter 100", V_init, F_init);
-    }
-
-    //polyscope::state::userCallback = callbackProcruste;
+    polyscope::state::userCallback = callbackGrowingShape;
     polyscope::show();
 
     return 0;
 }
-
-//Rotate a mesh
-    //Eigen::MatrixXd n_x_axis(n, 3), n_z_axis(n, 3);
-    //for (int i = 0; i < n; i++) { // row
-    //    n_x_axis.row(i) = Eigen::Vector3d(1, 0, 0);
-    //}
-    // 
-    //for (int i = 0; i < n; i++) { // row
-    //    n_z_axis.row(i) = Eigen::Vector3d(0, 0, 1);
-    //}
-    //Eigen::VectorXd angle = Eigen::VectorXd::Constant(n, 1, 90);
-    //Eigen::MatrixXd V4 = igl::rotate_vectors(V1, angle, n_x_axis, n_z_axis);
 
 
 
