@@ -419,24 +419,42 @@ void constructDiamondRestMesh(Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Ei
 }
 
 void growShape(int n_iteration, float alpha, float beta) { //TODO: take mesh file as an input
-    // load original mesh 
+    //// Option 1: load original mesh 
+    //Eigen::MatrixXd V_init;
+    //Eigen::MatrixXi F_init;
+    //igl::readOBJ("../original grid.obj", V_init, F_init);
+
+    //// randomly displacing z-axis of 2D grid
+    //for (int i = 0; i < V_init.rows(); i++) {
+    //    V_init(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
+    //}
+    //polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
+
+
+    //// set non-uniform scaling, inner area scaling > outer area scaling
+    //Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
+    //int m = 10; //TODO: take input mesh size as a variable
+    //for (int i = 5; i <= 15; i++) { // row
+    //    for (int j = 2; j <= 8; j++) { // col
+    //        scaling((m + 1) * i + j) = 1.5;
+    //    }
+    //}
+
+    // Option 2: load spot
     Eigen::MatrixXd V_init;
     Eigen::MatrixXi F_init;
-    igl::readOBJ("../original grid.obj", V_init, F_init);
-
-    // randomly displacing z-axis of 2D grid
-    for (int i = 0; i < V_init.rows(); i++) {
-        V_init(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
-    }
+    igl::readOBJ("../spot.obj", V_init, F_init);
     polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
 
-
-    // set non-uniform scaling, inner area scaling > outer area scaling
+    // set non-uniform scaling, spot face scaling > spot body scaling
     Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
-    int m = 10; //TODO: take input mesh size as a variable
-    for (int i = 5; i <= 15; i++) { // row
-        for (int j = 2; j <= 8; j++) { // col
-            scaling((m + 1) * i + j) = 1.5;
+    Eigen::VectorXd reference = V_init.row(64); //roughly the farthest point from spot's body, spot's head starting point
+    float head_dist = 0.66; //roughly Euclidean distance bw the reference point and the boundary of spot's body and head
+    for (int i = 0; i < V_init.rows(); i++) { 
+        Eigen::VectorXd v = V_init.row(i);
+        float dist = (reference.transpose() - v.transpose()).norm();
+        if (dist <= head_dist) {
+            scaling(i) = 1.5;
         }
     }
 
