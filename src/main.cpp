@@ -41,22 +41,13 @@
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
+Eigen::VectorXd original_scaling;
 
 // Options for algorithms
 int iVertexSource = 7;
 
 int n; // # of vertices in the mesh
 Eigen::VectorXd randN;
-
-//arbitrary function to display 2D grid color map
-void function(int n, int m, Eigen::MatrixXd& func) {
-    for (int i = 0; i < (n); i++) {
-        for (int j = 0; j < (m); j++) {
-            func(i, j) = (m + 1) * i + j;
-        }
-    }
-}
-
 
 void create2DGridManual(int n, int m, Eigen::MatrixXd &V, Eigen::MatrixXi &F, float scale_1, float scale_2, bool displace, bool rotate) {
     using namespace Eigen;
@@ -108,7 +99,7 @@ void create2DGridVariationsAndSave() {
     igl::writeOBJ("../y rotated grid.obj", V4, F4);
 }
 
-// Semi-Implicit 2
+// Turing Semi-Implicit 2
 void reactionDiffusionImplicit(float t, float _alpha, float _beta, float _s, float _da, float _db) {
     using namespace Eigen;
     using namespace std;
@@ -250,38 +241,56 @@ void computeCotangentLaplacian(float t) {
   temp -> setMapRange({-0.1, 0.1});
 }
 
-// callbacks for reaction-diffusion
-void callback() {
+// gray-scott semi-implicit (1 or 2?)
+void implicitReactionDiffusionGrayScott(float numSteps, float timeStep, double F_val, double k_val) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
 
+    Eigen::VectorXd U = Eigen::VectorXd::Constant(L.rows(), 1, 1);
+    Eigen::VectorXd V = Eigen::VectorXd::Constant(L.rows(), 1, 0);
 
-  static int maxRD = 100;
-  ImGui::InputInt("max iter", &maxRD);
-  static float tRD = 0;
-  static float alpha = 0;
-  static float beta = 0;
-  static float s = 0;
-  static float da = 0;
-  static float db = 0;
+    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, F_val);  // feed rate
+    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, k_val); // degrading rate
+    float du = 1; // diffusion rate
+    float dv = (float)0.5; // diffusion rate
 
-  ImGui::SameLine();
-  if ((ImGui::SliderFloat("ReactionDiffusion iter", &tRD, 0, maxRD))\
-      || (ImGui::SliderFloat("alpha", &alpha, 0, 20))\
-      || (ImGui::SliderFloat("beta", &beta, 0, 20))\
-      || (ImGui::SliderFloat("s", &s, 0, 1))\
-      || (ImGui::SliderFloat("da", &da, 0, 1))\
-      || (ImGui::SliderFloat("db", &db, 0, 1))){
-      //reactionDiffusionExplicit(tRD, alpha, beta, s, da, db);
-      reactionDiffusionImplicit(tRD, alpha, beta, s, da, db);
+    // Modify V partially (eg ink drop in water) to drive diffusion
+    int reference_idx = rand() % (meshV.rows()+1); //random index between 0 and # rows in meshV (ie # of vertices)
+    // float desired_dist = 0.1; // for spot (about 1/20 of its size)
+    float desired_dist = 1; // for grid (about 1/20 of its size)
+    for (int i = 0; i < meshV.rows(); i++) {
+        // when the Euclidean distance bw the reference idx vertex position & ith vertex < 0.1
+        if ((pow(( meshV(i, 0) - meshV(reference_idx, 0)),2) + \
+            pow((meshV(i, 1) - meshV(reference_idx, 1)),2)  + \
+            pow((meshV(i, 2) - meshV(reference_idx, 2)), 2))  < pow(desired_dist, 2)) {
+            V(i) = 1.0;
+        }
+    }
 
-  }
+    Eigen::SparseMatrix<double> I(L.rows(), L.rows()); I.setIdentity();
 
-  ImGui::SameLine();
-  ImGui::InputInt("source vertex", &iVertexSource);
+    Eigen::SparseMatrix<double> temp1 = (I - timeStep * du * L).eval();
+    Eigen::SparseMatrix<double> temp2 = (I - timeStep * dv * L).eval();
 
-  ImGui::PopItemWidth();
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
+
+    solver1.compute(temp1);
+    solver2.compute(temp2);
+
+    for (int i = 0; i < numSteps; i++) {
+        Eigen::VectorXd UVV = U.array() * V.array() * V.array();
+        Eigen::VectorXd FU = F.array() * U.array();
+        U = solver1.solve((U + timeStep * (F - FU - UVV)).eval());
+        Eigen::VectorXd kV = k.array() * V.array();
+        Eigen::VectorXd FV = F.array() * V.array();
+        V = solver2.solve((V + timeStep * (UVV - kV - FV)).eval());
+    }
+
+    original_scaling = U; //update scaling as a global variable
+    auto temp = polyscope::getSurfaceMesh("input mesh");
+    auto mesh = temp->addVertexScalarQuantity("Scott Implicit", U);
 }
-
-
 
 void procruste(Eigen::MatrixXi F_init, Eigen::MatrixXd V_init, Eigen::MatrixXd V_rest, Eigen::MatrixXd& V_update) {
     int n_faces = F_init.rows();
@@ -301,7 +310,6 @@ void procruste(Eigen::MatrixXi F_init, Eigen::MatrixXd V_init, Eigen::MatrixXd V
     }
     V_update = V_init;
 }
-
 
 // TODO: combine with procruste triangle
 void procruste_diamond(Eigen::MatrixXi F_rest_diamonds_in_org_v_idx, Eigen::MatrixXd V_init, Eigen::MatrixXd V_rest_diamonds, Eigen::MatrixXd& V_update) {
@@ -324,6 +332,7 @@ void procruste_diamond(Eigen::MatrixXi F_rest_diamonds_in_org_v_idx, Eigen::Matr
     V_update = V_init;
 }
 
+//TODO: check if this always create valid triangles (eg when one vertes is scaled by 0.1 and the other is by 2.0)
 void constructRestMesh(Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Eigen::VectorXd scaling, Eigen::MatrixXd& V_rest, Eigen::MatrixXi& F_rest) {
     int n_faces = F_init.rows();
     for (int i = 0; i < n_faces; i++) {
@@ -418,20 +427,13 @@ void constructDiamondRestMesh(Eigen::MatrixXd V_init, Eigen::MatrixXi F_init, Ei
     }
 }
 
-void growShape(int n_iteration, float alpha, float beta) { //TODO: take mesh file as an input
-    //// Option 1: load original mesh 
-    //Eigen::MatrixXd V_init;
-    //Eigen::MatrixXi F_init;
-    //igl::readOBJ("../original grid.obj", V_init, F_init);
+void growShape(int n_iteration, double alpha, double beta, double min_scaling, double max_scaling) { //TODO: take mesh file as an input
+    std::cout << n_iteration << " " << alpha << "  " << beta << " " << min_scaling << " " << max_scaling << std::endl;
 
-    //// randomly displacing z-axis of 2D grid
-    //for (int i = 0; i < V_init.rows(); i++) {
-    //    V_init(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
-    //}
-    //polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
+    Eigen::MatrixXd V_init = meshV;
+    Eigen::MatrixXi F_init = meshF;
 
-
-    //// set non-uniform scaling, inner area scaling > outer area scaling
+    // set non-uniform scaling, inner area scaling > outer area scaling
     //Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
     //int m = 10; //TODO: take input mesh size as a variable
     //for (int i = 5; i <= 15; i++) { // row
@@ -440,46 +442,35 @@ void growShape(int n_iteration, float alpha, float beta) { //TODO: take mesh fil
     //    }
     //}
 
-    // Option 2: load spot
-    Eigen::MatrixXd V_init;
-    Eigen::MatrixXi F_init;
-    igl::readOBJ("../spot.obj", V_init, F_init);
-    polyscope::registerSurfaceMesh("init mesh", V_init, F_init);
-
     // set non-uniform scaling, spot face scaling > spot body scaling
-    Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
-    Eigen::VectorXd reference = V_init.row(64); //roughly the farthest point from spot's body, spot's head starting point
-    float head_dist = 0.66; //roughly Euclidean distance bw the reference point and the boundary of spot's body and head
-    for (int i = 0; i < V_init.rows(); i++) { 
-        Eigen::VectorXd v = V_init.row(i);
-        float dist = (reference.transpose() - v.transpose()).norm();
-        if (dist <= head_dist) {
-            scaling(i) = 1.5;
-        }
-    }
+    //Eigen::VectorXd scaling = Eigen::VectorXd::Constant(V_init.rows(), 1, 1.2);
+    //Eigen::VectorXd reference = V_init.row(64); //roughly the farthest point from spot's body, spot's head starting point
+    //float head_dist = 0.66; //roughly Euclidean distance bw the reference point and the boundary of spot's body and head
+    //for (int i = 0; i < V_init.rows(); i++) { 
+    //    Eigen::VectorXd v = V_init.row(i);
+    //    float dist = (reference.transpose() - v.transpose()).norm();
+    //    if (dist <= head_dist) {
+    //        scaling(i) = 1.5;
+    //    }
+    //}
+
+    Eigen::VectorXd scaling  = ((max_scaling - min_scaling) * original_scaling) + Eigen::VectorXd::Constant(V_init.rows(), 1, min_scaling);
 
     // construct rest mesh
     int n_faces = F_init.rows();
     Eigen::MatrixXd V_rest(n_faces * 3, 3); // position of n_faces * 3 vertices, ordered according to F_rest face
     Eigen::MatrixXi F_rest(n_faces, 3);
     constructRestMesh(V_init, F_init, scaling, V_rest, F_rest);
-    polyscope::registerSurfaceMesh("triangle rest mesh", V_rest, F_rest);
+    //polyscope::registerSurfaceMesh("triangle rest mesh", V_rest, F_rest);
 
     for (int itr_ctr = 0; itr_ctr < n_iteration; itr_ctr++) {
         // stretching 
         Eigen::MatrixXd V_stretched(V_init.rows(), 3);
         procruste(F_init, V_init, V_rest, V_stretched); //update V_stretched mesh
         V_init = V_init + (V_stretched - V_init) * alpha;
-        if (itr_ctr == 0) { //TODO: use f-string instead of multiple if statements
-            polyscope::registerSurfaceMesh("stretched: iter 1", V_init, F_init);
-        }
-        if (itr_ctr == 9) { 
-            polyscope::registerSurfaceMesh("stretched: iter 10", V_init, F_init);
-        }
-        if (itr_ctr == 99) { 
-            polyscope::registerSurfaceMesh("stretched: iter 100", V_init, F_init);
-        }
-
+        //if (itr_ctr == 0) { //debugging purposes, TODO: use f-string instead of multiple if statements
+        //    polyscope::registerSurfaceMesh("stretched: iter 1", V_init, F_init);
+        //}
         // construct diamond rest mesh for bending-resisting
         Eigen::MatrixXi E; //E(e) row = (vertex i, vertex j) edge
         Eigen::VectorXi EMAP;
@@ -495,113 +486,95 @@ void growShape(int n_iteration, float alpha, float beta) { //TODO: take mesh fil
         Eigen::MatrixXi F_rest_diamond(n_inner_edges, 4); // vertex indices of a diamond consist of (2*i)th triangle and (2*i+1)th triangl
         Eigen::MatrixXi F_rest_diamond_in_org_v_idx(n_inner_edges, 4); // vertex indices of a diamond consist of (2*i)th triangle and (2*i+1)th triangl
         constructDiamondRestMesh(V_init, F_init, V_rest_diamond, F_rest_diamond, F_rest_diamond_in_org_v_idx);
-        if (itr_ctr == 0) {
-            polyscope::registerSurfaceMesh("diamond rest mesh: iter 1", V_rest_diamond, F_rest_diamond);
-        }
+        //if (itr_ctr == 0) {
+        //    polyscope::registerSurfaceMesh("diamond rest mesh: iter 1", V_rest_diamond, F_rest_diamond);
+        //}
 
         //bending resisting
         Eigen::MatrixXd V_bending_resisted(V_init.rows(), 3);
         procruste_diamond(F_rest_diamond_in_org_v_idx, V_init, V_rest_diamond, V_bending_resisted); //update V_bending_resisted mesh
         V_init = V_init + (V_bending_resisted - V_init) * beta;
-        if (itr_ctr == 0) { //TODO: use f-string instead of multiple if statements
-            polyscope::registerSurfaceMesh("bending resisted: iter 1", V_init, F_init);
-        }
-        if (itr_ctr == 9) {
-            polyscope::registerSurfaceMesh("bending resisted: iter 10", V_init, F_init);
-        }
-        if (itr_ctr == 99) {
-            polyscope::registerSurfaceMesh("bending resisted: iter 100", V_init, F_init);
-        }
+        //if (itr_ctr == 0) { //debugging purposes, TODO: use f-string instead of multiple if statements
+        //    polyscope::registerSurfaceMesh("bending resisted: iter 1", V_init, F_init);
+        //}
     }
     polyscope::registerSurfaceMesh("final mesh", V_init, F_init);
 }
 
-void callbackGrowingShape() {
-    static int max_n_iteration = 100;
-    ImGui::InputInt("max iter", &max_n_iteration);
-    static float alpha = 1.0;
-    static float beta = 0.5;
+void callback() {
+    static float timestep = 1;
+    ImGui::InputFloat("Time Step", &timestep);
 
-    static float n_iteration = 0;
-    if ((ImGui::SliderFloat("growing shapes", &n_iteration, 0, max_n_iteration))
-        || (ImGui::InputFloat("alpha", &alpha))
-        || (ImGui::InputFloat("beta", &beta))) {
-        growShape(n_iteration, alpha, beta);
+    static double F = 0.024;
+    ImGui::InputDouble("F", &F);
+
+    static double k = 0.06;
+    ImGui::InputDouble("k", &k);
+
+    static float rd_n_iteration = 1;
+    ImGui::InputFloat("Number of Steps", &rd_n_iteration);
+
+    if (ImGui::Button("Gray-Scott Reaction Diffusion Implicit")) {
+        implicitReactionDiffusionGrayScott(rd_n_iteration, timestep, F, k); // scaling range: (0, 1)
     }
+
+    static double min_scaling = 1; //scaling results from r-d would be scaled accordingly
+    ImGui::InputDouble("Minimum scaling", &min_scaling);
+
+    static double max_scaling = 2.5; //scaling results from r-d would be scaled accordingly
+    ImGui::InputDouble("Maximum scaling", &max_scaling);
+
+    static double alpha = 1.0;
+    ImGui::InputDouble("alpha", &alpha);
+
+    static double beta = 0.5;
+    ImGui::InputDouble("beta", &beta);
+
+    //static int growing_max_n_iteration = 100;
+    //ImGui::InputInt("max iter", &growing_max_n_iteration);
+
+    static int growing_n_iteration = 50;
+    ImGui::InputInt("Growing iterations", &growing_n_iteration);
+
+    if (ImGui::Button("growing shapes refresh")) {
+        growShape(growing_n_iteration, alpha, beta, min_scaling, max_scaling);
+    }
+
+
+    //static int growing_n_iteration = 0;
+    //if ((ImGui::SliderInt("growing shapes", &growing_n_iteration, 0, growing_max_n_iteration)) ||
+    //    (ImGui::Button("growing shapes refresh"))) {
+    //    growShape(growing_n_iteration, alpha, beta, min_scaling, max_scaling);
+    //}
 }
 
 
-int main(int argc, char** argv) {
-    srand((unsigned int)time(NULL));
-
-    //create2DGridVariationsAndSave(); 
-
+int main(int argc, char **argv) {
     polyscope::init();
-    polyscope::state::userCallback = callbackGrowingShape;
+
+    //std::string filename = "../spot.obj";
+    std::string filename = "../original grid.obj";
+
+    Eigen::MatrixXd origV, meshV1;
+    Eigen::MatrixXi origF, meshF1;
+    igl::readOBJ(filename, origV, origF);
+    if (filename == "../original grid.obj") {
+        for (int i = 0; i < origV.rows(); i++) {
+            origV(i, 2) = (float(rand()) / float((RAND_MAX)) * float(0.1));
+        }
+    }
+
+    Eigen::SparseMatrix<double> S, S1;
+    igl::loop(origV.rows(), origF, S1, meshF1);
+    meshV1 = S1 * origV;
+    igl::loop(meshV1.rows(), meshF1, S, meshF);
+    meshV = S * meshV1;
+
+    polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+
+    polyscope::state::userCallback = callback;
+
     polyscope::show();
 
     return 0;
 }
-
-
-
-//int main2(int argc, char **argv) {
-//  //         //
-//  // 2D grid //
-//  //         //
-//  Eigen::MatrixXd grid_V;
-//  Eigen::MatrixXi grid_F;
-//  create2DGridManual(10, 20, grid_V, grid_F);
-//
-//  // Options
-//  polyscope::options::autocenterStructures = true;
-//  polyscope::view::windowWidth = 1024;
-//  polyscope::view::windowHeight = 1024;
-//
-//  // Initialize polyscope
-//  polyscope::init();
-//
-//  // Register the mesh with Polyscope
-//  polyscope::registerSurfaceMesh("input mesh", grid_V, grid_F);
-//
-//  Eigen::MatrixXd func(10, 20);
-//  function(10, 20, func);
-//  auto mesh = polyscope::getSurfaceMesh("input mesh");
-//
-//  func.transposeInPlace();
-//  Eigen::VectorXd func_F(Eigen::Map<Eigen::VectorXd>(func.data(), func.cols() * func.rows()));
-//  auto temp = mesh->addFaceScalarQuantity("test", func_F);
-//
-//  polyscope::show();
-//
-//  //         //
-//  // 3D mesh //
-//  //         //
-//  
-//  //std::string filename = "../spot.obj";
-//  //std::cout << "loading: " << filename << std::endl;
-//
-//  //Eigen::MatrixXd origV;
-//  //Eigen::MatrixXi origF;
-//
-//  // Read the mesh
-//  //igl::readOBJ(filename, origV, origF);
-//  ////Eigen::SparseMatrix<double> S;
-//  //igl::loop(origV.rows(), origF, S, meshF);
-//  //meshV = S * origV;
-//
-//  // Register the mesh with Polyscope
-//  //polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
-//
-//  //n = meshV.rows();// number of vertex in the mesh
-//  //randN = Eigen::VectorXd::Random(n, 1);
-//
-//  // Add the callback
-//  // polyscope::state::userCallback = callback;
-//
-//  // Show the gui
-//  //polyscope::show();
-//
-//
-//  return 0;
-//}
