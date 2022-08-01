@@ -253,8 +253,11 @@ void implicitReactionDiffusionGrayScott(float numSteps, float timeStep, double F
 
     Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, F_val);  // feed rate
     Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, k_val); // degrading rate
-    float du = 1; // diffusion rate
-    float dv = (float)0.5; // diffusion rate
+    double du = 1; // diffusion rate
+    double dv = (float)0.5; // diffusion rate
+
+    //double du = 2e-5;
+    //double dv = 1e-5;
 
     // Modify V partially (ie ink drop in water) to drive diffusion
     int reference_idx = rand() % (meshV.rows()+1); //randomly pick one index between 0 and # rows in meshV (ie # of vertices)
@@ -467,6 +470,18 @@ void growShape(int n_iteration, double alpha, double beta, double min_scaling, d
     Eigen::MatrixXi F_rest(n_faces, 3);
     constructRestMesh(V_init, F_init, scaling, V_rest, F_rest);
 
+    // prepare for constructing diamond rest mesh for bending-resisting
+    Eigen::MatrixXi E; //E(e) row = (vertex i, vertex j) edge
+    Eigen::VectorXi EMAP;
+    Eigen::MatrixXi EF; //E(e) is the edge of EF(e,0) face and EF(e,1) face, edge having EF(e,0) == -1 or EF(e,1) == -1 indicates boundary edge
+    Eigen::MatrixXi EI; //E(e,0) is opposite of EI(e,0)=v th vertex in that face (and similarly for E(e,1))
+    igl::edge_flaps(F_init, E, EMAP, EF, EI); //TODO: replace with edges()
+
+    Eigen::Array<bool, Eigen::Dynamic, 1> BoolBoundary;
+    igl::is_boundary_edge(E, F_init, BoolBoundary); //TODO: remove this function, redundant
+    int n_inner_edges = E.rows() - BoolBoundary.count();
+
+
     for (int itr_ctr = 0; itr_ctr < n_iteration; itr_ctr++) {
         // stretching 
         Eigen::MatrixXd V_stretched(V_init.rows(), 3);
@@ -474,16 +489,6 @@ void growShape(int n_iteration, double alpha, double beta, double min_scaling, d
         V_init = V_init + (V_stretched - V_init) * alpha;
 
         // construct diamond rest mesh for bending-resisting
-        Eigen::MatrixXi E; //E(e) row = (vertex i, vertex j) edge
-        Eigen::VectorXi EMAP;
-        Eigen::MatrixXi EF; //E(e) is the edge of EF(e,0) face and EF(e,1) face, edge having EF(e,0) == -1 or EF(e,1) == -1 indicates boundary edge
-        Eigen::MatrixXi EI; //E(e,0) is opposite of EI(e,0)=v th vertex in that face (and similarly for E(e,1))
-        igl::edge_flaps(F_init, E, EMAP, EF, EI); //TODO: replace with edges()
-
-        Eigen::Array<bool, Eigen::Dynamic, 1> BoolBoundary;
-        igl::is_boundary_edge(E, F_init, BoolBoundary); //TODO: remove this function, redundant
-        int n_inner_edges = E.rows() - BoolBoundary.count();
-
         Eigen::MatrixXd V_rest_diamond(n_inner_edges * 4, 3); // xyz position of n_inner_edges * 4 vertices, (4*i)th, (4*i+1)th, (4*i+2)th, (4*i+3)th vertices make one diamond, diamond ordered according to inner edge list
         Eigen::MatrixXi F_rest_diamond(n_inner_edges, 4); // vertex indices of a diamond consist of (2*i)th triangle and (2*i+1)th triangl
         Eigen::MatrixXi F_rest_diamond_in_org_v_idx(n_inner_edges, 4); // vertex indices of a diamond consist of (2*i)th triangle and (2*i+1)th triangl
@@ -494,8 +499,14 @@ void growShape(int n_iteration, double alpha, double beta, double min_scaling, d
         procruste_diamond(F_rest_diamond_in_org_v_idx, V_init, V_rest_diamond, V_bending_resisted); //update V_bending_resisted mesh
         V_init = V_init + (V_bending_resisted - V_init) * beta;
 
-        if (itr_ctr % 500) {
-            std::cout << "running iteration: " << itr_ctr << std::endl;//progress indication
+        if (itr_ctr % 10 == 0) { //progress indication and save screenshots
+            std::string mesh_name = "growing iter " + std::to_string(itr_ctr + 1);
+            std::cout << mesh_name << std::endl;
+            auto temp_mesh = polyscope::registerSurfaceMesh(mesh_name, V_init, F_init);
+            polyscope::screenshot(("../" + mesh_name + ".png"), false);
+            temp_mesh->setEnabled(false);//disable for next screenshots
+            if (itr_ctr % 100 != 0)
+                polyscope::removeSurfaceMesh(mesh_name);//show fewer meshes on polyscope
         }
     }
     polyscope::registerSurfaceMesh("final mesh", V_init, F_init);
@@ -545,6 +556,9 @@ void callback() {
 int main(int argc, char **argv) {
     polyscope::init();
 
+    polyscope::view::lookAt(glm::vec3{ 3., 1, 0. }, glm::vec3{ 0., 0., 0. });//TODO: change for each grid
+
+
     std::string filename = "../spot.obj";
     //std::string filename = "../original grid.obj";
 
@@ -566,6 +580,7 @@ int main(int argc, char **argv) {
     polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
 
     polyscope::state::userCallback = callback;
+
 
     polyscope::show();
 

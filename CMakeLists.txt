@@ -12,6 +12,7 @@ option(LIBIGL_WITH_OPENGL_GLFW       "Use GLFW"           ON)
 option(LIBIGL_WITH_TRIANGLE          "Use Triangle"       ON)
 include(libigl)
 
+
 # Add your project files
 file(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
