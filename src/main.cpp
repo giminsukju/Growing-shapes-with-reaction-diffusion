@@ -503,13 +503,17 @@ void growShape(int n_iteration, double alpha, double beta, double min_scaling, d
             std::string mesh_name = "growing iter " + std::to_string(itr_ctr + 1);
             std::cout << mesh_name << std::endl;
             auto temp_mesh = polyscope::registerSurfaceMesh(mesh_name, V_init, F_init);
+            temp_mesh->setSurfaceColor(glm::vec3{ 0.8, 0.8, 0.1});
+            temp_mesh->setSmoothShade(true);
             polyscope::screenshot(("../" + mesh_name + ".png"), false);
             temp_mesh->setEnabled(false);//disable for next screenshots
             if (itr_ctr % 100 != 0)
-                polyscope::removeSurfaceMesh(mesh_name);//show fewer meshes on polyscope
+                polyscope::removeSurfaceMesh(mesh_name);//show 1 mesh per 100 iterations on polyscope
         }
     }
-    polyscope::registerSurfaceMesh("final mesh", V_init, F_init);
+    auto final_mesh = polyscope::registerSurfaceMesh("final mesh", V_init, F_init);
+    final_mesh->setSurfaceColor(glm::vec3{ 0.8, 0.8, 0.1 });
+    final_mesh->setSmoothShade(true);
 }
 
 void callback() {
@@ -577,7 +581,8 @@ int main(int argc, char **argv) {
     igl::loop(meshV1.rows(), meshF1, S, meshF);
     meshV = S * meshV1;
 
-    polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+    auto input_mesh = polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+    input_mesh->setEnabled(false);
 
     polyscope::state::userCallback = callback;
 
